@@ -291,7 +291,7 @@
     <h2 style="margin: 0 0 5px 0; color: #38bdf8; font-size: 28px; letter-spacing: 2px;">AEROSTRIKE.IO</h2>
     
     <!-- Rewarded Ad Button -->
-    <button class="btn reward-ad" style="width: 100%; padding: 10px; margin-bottom: 12px; font-size: 13px;" onclick="watchRewardedAdForCoins()">📺 WATCH AD (+500 🪙)</button>
+    <button id="watch-ad-btn" class="btn reward-ad" style="width: 100%; padding: 10px; margin-bottom: 12px; font-size: 13px;" onclick="watchRewardedAdForCoins()">📺 WATCH AD (+500 🪙)</button>
 
     <input type="text" id="player-name-input" maxlength="12" placeholder="Enter Pilot Name...">
     
@@ -484,44 +484,105 @@
 <canvas id="canvas"></canvas>
 
 <script>
-// CrazyGames SDK Integration Helpers
-const crazySDK = window.CrazyGames && window.CrazyGames.SDK ? window.CrazyGames.SDK : null;
+// ===== CrazyGames SDK v3 Integration =====
+// The v3 SDK MUST be initialized (await SDK.init()) before any other call.
+// crazySDK stays null until init succeeds. It also stays null on websites that
+// aren't CrazyGames (like GitHub Pages), where the SDK is "disabled" and every call throws.
+let crazySDK = null;
+
+async function initCrazySDK() {
+  try {
+    if (window.CrazyGames && window.CrazyGames.SDK) {
+      await window.CrazyGames.SDK.init();
+      if (window.CrazyGames.SDK.environment !== "disabled") {
+        crazySDK = window.CrazyGames.SDK;
+      }
+      console.log("CrazyGames SDK environment:", window.CrazyGames.SDK.environment);
+    }
+  } catch (e) {
+    console.warn("CrazyGames SDK init failed (normal outside CrazyGames):", e);
+    crazySDK = null;
+  }
+}
+initCrazySDK();
+
+// Gameplay events: CrazyGames wants to know when the player is actually playing.
+// Call start when flying begins/resumes, stop on any break (menu, death screen, match end).
+// The flag makes sure we never send "start" twice in a row or "stop" twice in a row.
+let gameplayActive = false;
+function sdkGameplayStart() {
+  if (gameplayActive) return;
+  gameplayActive = true;
+  try { if (crazySDK) crazySDK.game.gameplayStart(); } catch (e) { console.warn(e); }
+}
+function sdkGameplayStop() {
+  if (!gameplayActive) return;
+  gameplayActive = false;
+  try { if (crazySDK) crazySDK.game.gameplayStop(); } catch (e) { console.warn(e); }
+}
+
+// During an ad ALL game sound must be silent (music, SFX, engine hum).
+// Suspending the AudioContext pauses every sound at once.
+function pauseAudioForAd() { if (audioCtx && audioCtx.state === "running") audioCtx.suspend(); }
+function resumeAudioAfterAd() { if (audioCtx && audioCtx.state === "suspended") audioCtx.resume(); }
 
 function triggerMidgameAdAndVote() {
-  if (crazySDK && crazySDK.ad) {
+  if (!crazySDK) { startVoting(); return; } // Not on CrazyGames: skip the ad
+
+  // adFinished and adError could in theory both fire, so only continue once.
+  let continued = false;
+  const continueGame = () => {
+    if (continued) return;
+    continued = true;
+    resumeAudioAfterAd();
+    startVoting();
+  };
+
+  try {
     crazySDK.ad.requestAd("midgame", {
-      adStarted: () => { if (musicMaster) musicMaster.gain.value = 0; },
-      adFinished: () => { if (musicMaster) musicMaster.gain.value = (userProfile.musicVol / 100) * 0.25; startVoting(); },
-      adError: (err) => { console.log("Midgame Ad error or skipped:", err); if (musicMaster) musicMaster.gain.value = (userProfile.musicVol / 100) * 0.25; startVoting(); }
+      adStarted: () => pauseAudioForAd(),
+      adFinished: () => continueGame(),
+      adError: (error) => { console.log("Midgame ad not shown:", error); continueGame(); }
     });
-  } else {
-    startVoting(); // Local offline fallback
-  }
+  } catch (e) { console.warn(e); continueGame(); }
 }
 
 let adCountdownInterval = null;
 
+function grantRewardedCoins() {
+  userProfile.coins += 500;
+  saveProfile();
+  buildStore();
+  floatTexts.push({ x: canvas.width/2, y: canvas.height/2, text: `+500 🪙 REWARDED AD BONUS!`, life: 3.0 });
+}
+
+// Temporarily changes the "Watch Ad" button text so the player knows what happened.
+function flashAdButton(message) {
+  const btn = document.getElementById("watch-ad-btn");
+  if (!btn) return;
+  const original = btn.innerText;
+  btn.innerText = message; btn.disabled = true;
+  setTimeout(() => { btn.innerText = original; btn.disabled = false; }, 2500);
+}
+
 function watchRewardedAdForCoins() {
-  if (crazySDK && crazySDK.ad) {
+  // NOT on CrazyGames (GitHub Pages, testing): use the fake ad simulator so you can test the flow.
+  if (!crazySDK) { openAdSimulator(); return; }
+
+  // ON CrazyGames: coins are ONLY given in adFinished, after the ad really played.
+  // If the ad fails (ad blocker, no ad available, cooldown) the player gets nothing.
+  // Otherwise ad-blocker users could farm free coins forever.
+  try {
     crazySDK.ad.requestAd("rewarded", {
-      adStarted: () => { if (musicMaster) musicMaster.gain.value = 0; },
-      adFinished: () => {
-        if (musicMaster) musicMaster.gain.value = (userProfile.musicVol / 100) * 0.25;
-        userProfile.coins += 500;
-        saveProfile();
-        buildStore();
-        floatTexts.push({ x: canvas.width/2, y: canvas.height/2, text: `+500 🪙 REWARDED AD BONUS!`, life: 3.0 });
-      },
-      adError: (err) => {
-        console.log("Rewarded Ad error or blocked:", err);
-        if (musicMaster) musicMaster.gain.value = (userProfile.musicVol / 100) * 0.25;
-        // Fallback simulator modal for local testing when SDK ad doesn't pop up
-        openAdSimulator();
+      adStarted: () => pauseAudioForAd(),
+      adFinished: () => { resumeAudioAfterAd(); grantRewardedCoins(); },
+      adError: (error) => {
+        console.log("Rewarded ad not shown:", error);
+        resumeAudioAfterAd();
+        flashAdButton(error && error.code === "adblock" ? "AD BLOCKER DETECTED" : "NO AD AVAILABLE, TRY LATER");
       }
     });
-  } else {
-    openAdSimulator(); // Local offline simulator for testing
-  }
+  } catch (e) { console.warn(e); resumeAudioAfterAd(); flashAdButton("NO AD AVAILABLE, TRY LATER"); }
 }
 
 function openAdSimulator() {
@@ -548,10 +609,7 @@ function openAdSimulator() {
 function finishRewardedAd() {
   document.getElementById("ad-simulator-modal").style.display = "none";
   document.getElementById("menu-modal").style.display = "flex";
-  userProfile.coins += 500;
-  saveProfile();
-  buildStore();
-  floatTexts.push({ x: canvas.width/2, y: canvas.height/2, text: `+500 🪙 REWARDED AD BONUS!`, life: 3.0 });
+  grantRewardedCoins();
 }
 
 // Game State & Storage
@@ -1234,6 +1292,7 @@ function handleLaunch() {
     document.getElementById("match-kills-txt").innerText = String(player.roundKills);
     updateWeaponUI();
     setMusicTheme(MAPS[currentMapIdx].env);
+    sdkGameplayStart(); // back in the air after the menu
   }
 }
 
@@ -1258,8 +1317,9 @@ function startMatch() {
   });
   bullets = []; missiles = []; crates = []; mines = []; floatTexts = []; particles = []; 
   updateWeaponUI(); isRoundActive = true;
-  document.getElementById("match-kills-txt").innerText = "0"; 
+  document.getElementById("match-kills-txt").innerText = "0";
   setMusicTheme(MAPS[currentMapIdx].env);
+  if (!isInHangar) sdkGameplayStart(); // new match begins with the player flying
 }
 
 function respawnPlayer() {
@@ -1268,8 +1328,9 @@ function respawnPlayer() {
   player.hp = player.maxHp; player.weapon = "CANNON"; player.ammo = Infinity;
   player.alive = true; player.evadeTimer = 0; player.trailTimer = 0; player.laserTimer = 0;
   player.lifeKills = 0; player.lifeTimer = 0; player.flashTimer = 0;
-  document.getElementById("match-kills-txt").innerText = String(player.roundKills); 
+  document.getElementById("match-kills-txt").innerText = String(player.roundKills);
   updateWeaponUI();
+  sdkGameplayStart(); // respawned = playing again
 }
 
 function openMenu() { 
@@ -1287,6 +1348,7 @@ function openMenu() {
     savedPosY = player.y;
     savedAngle = player.angle;
   }
+  sdkGameplayStop(); // menu = break in gameplay
   isInHangar = true;
   player.alive = false;
   player.laserTimer = 0;
@@ -1719,6 +1781,7 @@ class Plane {
         document.getElementById("death-time").innerText = tStr;
         document.getElementById("death-killer-name").innerText = killer ? killer.name : "ENVIRONMENT";
         document.getElementById("death-modal").style.display = "flex";
+        sdkGameplayStop(); // death screen = break in gameplay
       }
     } else {
       this.respawnTimer = 1.2; 
@@ -1789,6 +1852,7 @@ function updateWeaponUI() { document.getElementById("weapon-badge").innerText = 
 
 function startIntermission() {
   isRoundActive = false; isVoting = false;
+  sdkGameplayStop(); // match over = break in gameplay
   document.getElementById("death-modal").style.display = "none";
   document.getElementById("out-of-bounds-warning").style.display = "none";
   setMusicTheme('voting');
@@ -1985,12 +2049,15 @@ function gameLoop(now) {
           if (p.isBot) p.evadeTimer = 2.0;
           for(let j=0; j<15; j++) particles.push({ x: m.x, y: m.y, vx:(Math.random()-0.5)*10, vy:(Math.random()-0.5)*10, color:"#ef4444", size:4, life:0.6, shape: 'circle' }); 
           
-          if (m.owner === player && !isInHangar) {
-            userProfile.stats.missileKills++;
-            saveProfile();
+          missiles.splice(i, 1); exploded = true;
+          if (p.hp <= 0) {
+            p.die(m.owner);
+            // Only count it as a missile KILL if this missile actually finished them off
+            if (m.owner === player && !isInHangar) {
+              userProfile.stats.missileKills++;
+              saveProfile();
+            }
           }
-
-          missiles.splice(i, 1); exploded = true; if (p.hp <= 0) p.die(m.owner); 
         }
       });
     }
@@ -2047,7 +2114,10 @@ function gameLoop(now) {
     const cx = camTargetX - canvas.width/2; const cy = Math.max(0, Math.min(WORLD_HEIGHT-canvas.height, camTargetY - canvas.height/2));
     
     render(cx, cy, dt); 
-  } catch (err) { }
+  } catch (err) {
+    // Never hide errors! Press F12 → Console in the browser to see them.
+    console.error("Game loop error:", err);
+  }
   requestAnimationFrame(gameLoop);
 }
 
