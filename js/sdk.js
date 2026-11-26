@@ -6,12 +6,22 @@
 // aren't CrazyGames (like GitHub Pages), where the SDK is "disabled" and every call throws.
 let crazySDK = null;
 
+// FEATURE FLAG: during CrazyGames "Basic Launch", ads are switched OFF.
+// A "Watch Ad" button that does nothing gets the game REJECTED, so on CrazyGames
+// we hide it until the game reaches Full Launch. Then change this to true.
+// (On localhost / GitHub Pages the button still shows so you can test it.)
+const REWARDED_ADS_ENABLED = false;
+
 async function initCrazySDK() {
   try {
     if (window.CrazyGames && window.CrazyGames.SDK) {
       await window.CrazyGames.SDK.init();
       if (window.CrazyGames.SDK.environment !== "disabled") {
         crazySDK = window.CrazyGames.SDK;
+      }
+      if (crazySDK && crazySDK.environment === "crazygames" && !REWARDED_ADS_ENABLED) {
+        const adBtn = document.getElementById("watch-ad-btn");
+        if (adBtn) adBtn.style.display = "none";
       }
       console.log("CrazyGames SDK environment:", window.CrazyGames.SDK.environment);
     }

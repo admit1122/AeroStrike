@@ -130,7 +130,7 @@ function gameLoop(now) {
       });
     }
 
-    for (let i = particles.length - 1; i >= 0; i--) { let p = particles[i]; p.x += p.vx; p.y += p.vy; p.life -= dt; if (p.life <= 0) particles.splice(i, 1); }
+    for (let i = particles.length - 1; i >= 0; i--) { let p = particles[i]; p.x += p.vx * 60 * dt; p.y += p.vy * 60 * dt; p.life -= dt; if (p.life <= 0) particles.splice(i, 1); }
 
     document.getElementById("hp-bar").style.width = `${Math.max(0, (player.hp/player.maxHp)*100)}%`; 
     document.getElementById("boost-bar").style.width = `${player.boost}%`;
